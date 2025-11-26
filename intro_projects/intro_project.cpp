@@ -1,6 +1,3 @@
-5.76 KB •166 lines
-•
-Formatting may be inconsistent from source
 #include <arduino_freertos.h>
 #include <stdint.h>
 
@@ -167,36 +164,24 @@ extern float bms_get_temperature(uint8_t n);
 void setup(void) {}
 void loop(void) {}
 
-enum states {lv, precharge, ts, rtd};
-volatile int state = lv;
+#define TS_ON     12
+#define RTD_BTN   13
+#define CURRENT   19
+#define CAN_RX    2
+#define CAN_TX    3
+#define MOSI      5
+#define MISO      6
+#define SCK       7
+#define LCD_CS    8
+#define BMS_CS    9
+#define AIR_POS   22
+#define PRECHARGE 23
+#define AIR_NEG   10
 
-float curr;
-float rpms[4];
-float steer;
-float trqs[4];
-
-volatile uint32_t wheel_cnts[4] = {};
-portMUX_TYPE m = portMUX_INITIALIZER_UNLOCKED;
-
-SemaphoreHandle_t spi;
-SemaphoreHandle_t can;
-
-uint32_t t;
-
-// ESP32
-// 13-27 , both input and output
-// 34,35,36,39 input only
-// 0 boot mode select, 2 boot voltage select, 12 boot flahsh memory, 6-11 spi flash
-// others are CAN etc
-
-
-#define SAFETY_1  22
-#define SAFETY_2  13
-#define SAFETY_3  23
-#define WS1       34
-#define WS2       35
-#define WS3       32
-#define WS4       33
+#define W1       34
+#define W2       35
+#define W3       32
+#define W4       33
 
 enum states {lv, precharge, ts, rtd};
 volatile int state = lv;
@@ -207,11 +192,12 @@ float steer;
 float trqs[4];
 volatile uint32_t wheel_cnts[4] = {0, 0, 0, 0};
 
-// lock so only 1 chunk of code uses resource at time
 portMUX_TYPE m = portMUX_INITIALIZER_UNLOCKED;
+SemaphoreHandle_t spi;
+SemaphoreHandle_t can;
 // the ++ wheel counter can interupt while we read the current number of ticks & store in cpu reg & calc torque (i.e torq task)
 // but, the read opperation read the old count value (n) and will resume with that old value
-// so it will ignore the n+1
+// so it will ignore the n+1. portmux fixes this.
 
 // count the wheels
 void IRAM_ATTR w1() {      // ram cause flash slow + like y write flash 10000 times and wear out
@@ -229,10 +215,12 @@ void IRAM_ATTR w4() {
 
 void shutdown() {
     // cause the safety relays are active high, so low turns off car
-    digitalWrite(SAFETY_1, LOW);
-    digitalWrite(SAFETY_2, LOW);
-    digitalWrite(SAFETY_3, LOW);
+    digitalWrite(AIR_POS, LOW);
+    digitalWrite(AIR_NEG, LOW);
+    digitalWrite(PRECHARGE, LOW);
     state = lv;  // car is off!
+    
+    // We need spi lock for lcd usually, but in panic shutdown we might just print
     lcd_printf("Shutdown");
 }
 
@@ -242,26 +230,34 @@ void trq(void *p) {
     TickType_t freq = pdMS_TO_TICKS(1);  // how many ticks in 1 ms? i.e frequency
 
     while(1) {
-        // how many wheel pulses counted? also reset to 0 so easy to calc next time
-        uint32_t temp_count[4];
+        // Only run torque logic if we are ready to drive
+        if (state == rtd) {
+            // how many wheel pulses counted? also reset to 0 so easy to calc next time
+            uint32_t temp_count[4];
 
-        portENTER_CRITICAL(&m);   // here we use the mutex for reasons described in mutex section (so we don't ignore a count for wheels when the wheel pulses while we run trq)
-        for(int i = 0; i < 4; i++) {
-            temp_count[i] = wheel_cnts[i]; // copy
-            wheel_cnts[i] = 0;                  // reset
+            portENTER_CRITICAL(&m);   // here we use the mutex for reasons described in mutex section (so we don't ignore a count for wheels when the wheel pulses while we run trq)
+            for(int i = 0; i < 4; i++) {
+                temp_count[i] = wheel_cnts[i]; 
+                wheel_cnts[i] = 0;         //reset
+            }
+            portEXIT_CRITICAL(&m);
+
+            // calculate rpm. We have 17 pulses per revolution
+            // remember, we run trq every milisecond. Therefore temp_count is counts/ms. We convert this into RPM via the factor 60000 / 17
+            // NOTE: counts/ms is very small, might want to average this over longer time in real life, but sticking to logic
+            for(int i = 0; i < 4; i++) {
+                rpms[i] = (float)temp_count[i] * (60000.0f / 17.0f); // Adjust constant as needed
+            }
+
+            // read current sensor
+            curr = (float)analogRead(CURRENT) * (3300.0f / 4096.0f) / 10.0f; 
+
+            calculate_torque_cmd(trqs, curr, rpms, steer);
+        } else {
+            for(int i=0; i<4; i++) trqs[i] = 0;  // car not driving
         }
-        portEXIT_CRITICAL(&m);
 
-        // calculate rpm. We have 17 pulses per revolution
-        // remember, we run trq every milisecond. Therefore temp_count is counts/ms. We convert this into RPM via the factor 60000 / 17
-        for(int i = 0; i < 4; i++) {
-            rpms[i] = (float)temp_count[i] * (60000.0f / 17.0f); // Adjust constant as needed
-        }
-
-        // calculate torque
-        calculate_torque_cmd(trqs, curr, rpms, steer);
-
-        // 1 ms period
+        // loop has 1ms period
         vTaskDelayUntil(&last_time, freq);   // this function calculates the time in the future when it shall repeatthe loop based on last_time. It waits until that time, and then writes the new time to last_time (hence why last_time is passed by reference)
         // this would be something like f() { last_time += freq }
     }
