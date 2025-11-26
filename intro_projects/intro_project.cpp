@@ -262,3 +262,30 @@ void trq(void *p) {
         // this would be something like f() { last_time += freq }
     }
 }
+
+
+void FSM(void *p) {
+    while(1) {
+        // they're active low
+        int ts_btn = digitalRead(TS_ON);
+        int rtd_btn = digitalRead(RTD_BTN);
+
+        if (state == lv) {  // do precharge sequence
+             if (ts_btn == LOW) {
+                 state = precharge;
+                 digitalWrite(AIR_NEG, HIGH);
+                 digitalWrite(PRECHARGE, HIGH);
+                 vTaskDelay(pdMS_TO_TICKS(5000));
+                 digitalWrite(AIR_POS, HIGH); 
+                 digitalWrite(PRECHARGE, LOW);
+                 state = ts;
+             }
+        } else if (state == ts) {
+             if (rtd_btn == LOW) {
+                 state = rtd;
+             }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50)); // check every 50ms if button
+    }
+}
