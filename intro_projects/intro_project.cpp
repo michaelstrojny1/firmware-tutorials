@@ -177,10 +177,10 @@ extern float bms_get_temperature(uint8_t n);
 #define AIR_NEG   10
 
 // wheel speed sensors . Wheel 1,2,3,4
-#define W1       34
-#define W2       35
-#define W3       32
-#define W4       33
+#define W1  34
+#define W2  35
+#define W3  32
+#define W4  33
 
 #define NUM_CELLS 10
 #define CAN_ID_STEER  1
